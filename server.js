@@ -14,9 +14,15 @@ app.use(express.json());
 app.get("/", (req, res) => res.json({ status: "Grabify API running 🚀" }));
 
 const SUPPORTED = [
-  "instagram.com","instagr.am","facebook.com","fb.watch","fb.com",
-  "tiktok.com","vm.tiktok.com","youtube.com","youtu.be",
-  "twitter.com","x.com","pinterest.com","pin.it","vimeo.com"
+  "instagram.com","instagr.am",
+  "facebook.com","fb.watch","fb.com",
+  "tiktok.com","vm.tiktok.com",
+  "youtube.com","youtu.be",
+  "twitter.com","x.com",
+  "vimeo.com",
+  "reddit.com","redd.it","v.redd.it",
+  "dailymotion.com","dai.ly",
+  "pinterest.com","pin.it"
 ];
 
 // ─── /api/download — returns available quality info ────────────────────────
