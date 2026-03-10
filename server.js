@@ -52,7 +52,8 @@ app.get("/api/download", (req, res) => {
   console.log(`[Download] Fetching: ${url}`);
 
   // Use yt-dlp to get video info + direct links
-  execFile("yt-dlp", [
+  const ytdlp = process.env.YTDLP_PATH || "./yt-dlp";
+  execFile(ytdlp, [
     "--dump-json",
     "--no-playlist",
     "--no-warnings",
