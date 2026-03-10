@@ -1,6 +1,7 @@
 const express   = require("express");
 const cors      = require("cors");
 const path      = require("path");
+const { spawn } = require("child_process");
 const YTDlpWrap = require("yt-dlp-wrap").default;
 
 const app   = express();
@@ -18,22 +19,21 @@ const SUPPORTED = [
   "twitter.com","x.com","pinterest.com","pin.it","vimeo.com"
 ];
 
+// ─── /api/download — returns available quality info ────────────────────────
 app.get("/api/download", async (req, res) => {
   const { url } = req.query;
   if (!url) return res.status(400).json({ error: "No URL provided" });
   try { new URL(url); } catch { return res.status(400).json({ error: "Invalid URL" }); }
-  if (!SUPPORTED.some(d => url.includes(d))) return res.status(400).json({ error: "Platform not supported" });
+  if (!SUPPORTED.some(d => url.includes(d)))
+    return res.status(400).json({ error: "Platform not supported" });
 
   console.log("[Download]", url);
   try {
-    // Use --merge-output-format to ensure video+audio are combined
-    // bestvideo+bestaudio gets best quality with sound
     const metadata = await ytDlp.execPromise([
       url,
       "--dump-json",
       "--no-playlist",
       "--no-warnings",
-      "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
       "--socket-timeout", "20"
     ]);
 
@@ -42,80 +42,149 @@ app.get("/api/download", async (req, res) => {
     const qualities = [];
     const seen = new Set();
 
-    // Priority: get formats that have BOTH video AND audio
+    // Combined video+audio formats (guaranteed to have both streams)
     const combined = formats
       .filter(f => f.vcodec && f.vcodec !== "none" && f.acodec && f.acodec !== "none" && f.url)
       .sort((a, b) => (b.height || 0) - (a.height || 0));
 
-    // If combined formats exist, use them (guaranteed audio+video)
     for (const f of combined) {
       const h = f.height || 0;
       if (h > 0 && !seen.has(h)) {
         seen.add(h);
         const label = h >= 2160 ? "4K" : h >= 1440 ? "2K" : `${h}p`;
         qualities.push({
-          quality:  label,
+          quality:    label,
           resolution: `${h}p`,
-          url:      f.url,
-          ext:      "mp4",
-          filesize: f.filesize ? fmt(f.filesize) : null,
-          hasAudio: true
+          ext:        "mp4",
+          filesize:   f.filesize ? fmt(f.filesize) : null,
+          hasAudio:   true
         });
       }
       if (qualities.length >= 4) break;
     }
 
-    // Fallback: if no combined, get the "best" single format (usually has audio)
+    // Fallback: best available format with audio
     if (qualities.length === 0) {
       const best = formats
         .filter(f => f.url)
         .sort((a, b) => {
-          // Prefer formats with audio
-          const aHasAudio = a.acodec && a.acodec !== "none" ? 1 : 0;
-          const bHasAudio = b.acodec && b.acodec !== "none" ? 1 : 0;
-          if (bHasAudio !== aHasAudio) return bHasAudio - aHasAudio;
+          const aA = a.acodec && a.acodec !== "none" ? 1 : 0;
+          const bA = b.acodec && b.acodec !== "none" ? 1 : 0;
+          if (bA !== aA) return bA - aA;
           return (b.height || 0) - (a.height || 0);
         });
-
       if (best[0]) {
         qualities.push({
-          quality:  best[0].height ? `${best[0].height}p` : "HD",
+          quality:    best[0].height ? `${best[0].height}p` : "HD",
           resolution: best[0].height ? `${best[0].height}p` : "HD",
-          url:      best[0].url,
-          ext:      best[0].ext || "mp4",
-          filesize: null,
-          hasAudio: best[0].acodec && best[0].acodec !== "none"
+          ext:        "mp4",
+          filesize:   null,
+          hasAudio:   true
         });
       }
     }
 
-    // Audio only MP3
+    // Audio-only entry
     const audio = formats
       .filter(f => f.vcodec === "none" && f.acodec && f.acodec !== "none" && f.url)
       .sort((a, b) => (b.abr || 0) - (a.abr || 0))[0];
     if (audio) {
       qualities.push({
-        quality:  "Audio",
+        quality:    "Audio",
         resolution: "mp3",
-        url:      audio.url,
-        ext:      "mp3",
-        filesize: audio.filesize ? fmt(audio.filesize) : null,
-        hasAudio: true
+        ext:        "mp3",
+        filesize:   audio.filesize ? fmt(audio.filesize) : null,
+        hasAudio:   true
       });
     }
 
-    if (qualities.length === 0) return res.status(500).json({ error: "No downloadable formats found." });
+    if (qualities.length === 0)
+      return res.status(500).json({ error: "No downloadable formats found." });
 
     return res.json({
-      title:     info.title || "video",
-      thumbnail: info.thumbnail || null,
-      platform:  info.extractor_key || "unknown",
+      title:       info.title || "video",
+      thumbnail:   info.thumbnail || null,
+      platform:    info.extractor_key || "unknown",
+      originalUrl: url,   // ← passed back so frontend can use /api/stream
       qualities
     });
 
   } catch (err) {
     console.error("[Error]", err.message);
     return res.status(500).json({ error: "Could not fetch video. It may be private or unsupported." });
+  }
+});
+
+// ─── /api/stream — merges video+audio via yt-dlp and pipes to client ───────
+// This is the REAL download endpoint. It solves the black-screen bug by
+// letting yt-dlp merge streams server-side instead of sending raw CDN URLs.
+app.get("/api/stream", async (req, res) => {
+  const { url, quality, filename } = req.query;
+  if (!url) return res.status(400).json({ error: "No URL provided" });
+  if (!SUPPORTED.some(d => url.includes(d)))
+    return res.status(400).json({ error: "Platform not supported" });
+
+  // Map quality label → yt-dlp format string
+  const formatMap = {
+    "4k":    "bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio/best[height<=2160]",
+    "2k":    "bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio/best[height<=1440]",
+    "1080p": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]",
+    "720p":  "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]",
+    "480p":  "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]",
+    "hd":    "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best",
+    "audio": "bestaudio[ext=m4a]/bestaudio",
+    "mp3":   "bestaudio[ext=m4a]/bestaudio",
+    "default":"bestvideo[ext=mp4]+bestaudio[ext=m4a]/best"
+  };
+
+  const qualityKey = (quality || "default").toLowerCase();
+  const isAudio    = qualityKey === "audio" || qualityKey === "mp3";
+  const ytFormat   = formatMap[qualityKey] || formatMap["default"];
+  const safeFile   = filename || (isAudio ? "grabify-audio.mp3" : "grabify-video.mp4");
+
+  console.log("[Stream]", url, "quality:", qualityKey);
+
+  try {
+    res.setHeader("Content-Type", isAudio ? "audio/mpeg" : "video/mp4");
+    res.setHeader("Content-Disposition", `attachment; filename="${safeFile}"`);
+    res.setHeader("Transfer-Encoding", "chunked");
+
+    const args = [
+      url,
+      "-f", ytFormat,
+      "--merge-output-format", isAudio ? "mp3" : "mp4",
+      "-o", "-",           // output to stdout
+      "--no-playlist",
+      "--quiet",
+      "--no-warnings",
+      "--socket-timeout", "30"
+    ];
+
+    const proc = spawn(path.join(__dirname, "yt-dlp"), args);
+
+    proc.stdout.pipe(res);
+
+    proc.stderr.on("data", d => console.error("[yt-dlp]", d.toString().trim()));
+
+    proc.on("error", err => {
+      console.error("[Stream Error]", err.message);
+      if (!res.headersSent) res.status(500).json({ error: "Stream failed" });
+    });
+
+    proc.on("close", code => {
+      if (code !== 0) console.warn("[yt-dlp exited]", code);
+    });
+
+    // If client disconnects, kill the process
+    req.on("close", () => {
+      proc.kill("SIGKILL");
+      console.log("[Stream] Client disconnected, killed yt-dlp");
+    });
+
+  } catch (err) {
+    console.error("[Stream Error]", err.message);
+    if (!res.headersSent)
+      res.status(500).json({ error: "Stream failed: " + err.message });
   }
 });
 
