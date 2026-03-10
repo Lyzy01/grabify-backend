@@ -4,8 +4,7 @@
   "description": "Grabify video downloader API",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "postinstall": "node install-ytdlp.js"
+    "start": "node server.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
