@@ -3,7 +3,7 @@ services:
     name: grabify-backend
     env: node
     plan: free
-    buildCommand: npm install
+    buildCommand: npm install && node -e "const Y=require('yt-dlp-wrap').default; Y.downloadFromGithub('./yt-dlp').then(()=>console.log('yt-dlp ready')).catch(e=>console.log('warn:',e.message))"
     startCommand: node server.js
     envVars:
       - key: NODE_ENV
