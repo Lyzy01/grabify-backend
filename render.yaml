@@ -1,12 +1,9 @@
 services:
   - type: web
-    name: grabify-api
+    name: grabify-backend
     env: node
     plan: free
-    buildCommand: |
-      npm install
-      curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
-      chmod a+rx /usr/local/bin/yt-dlp
+    buildCommand: npm install && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ./yt-dlp && chmod a+rx ./yt-dlp
     startCommand: node server.js
     envVars:
       - key: NODE_ENV
