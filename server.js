@@ -125,16 +125,18 @@ app.get("/api/stream", async (req, res) => {
     return res.status(400).json({ error: "Platform not supported" });
 
   // Map quality label → yt-dlp format string
+  // NOTE: No [ext=mp4] restrictions — Facebook/Instagram don't always have mp4 formats
+  // yt-dlp will merge to mp4 via --merge-output-format anyway
   const formatMap = {
-    "4k":    "bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio/best[height<=2160]",
-    "2k":    "bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio/best[height<=1440]",
-    "1080p": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-    "720p":  "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]",
-    "480p":  "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]",
-    "hd":    "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best",
-    "audio": "bestaudio[ext=m4a]/bestaudio",
-    "mp3":   "bestaudio[ext=m4a]/bestaudio",
-    "default":"bestvideo[ext=mp4]+bestaudio[ext=m4a]/best"
+    "4k":     "bestvideo[height<=2160]+bestaudio/bestvideo[height<=2160]/best[height<=2160]/best",
+    "2k":     "bestvideo[height<=1440]+bestaudio/bestvideo[height<=1440]/best[height<=1440]/best",
+    "1080p":  "bestvideo[height<=1080]+bestaudio/bestvideo[height<=1080]/best[height<=1080]/best",
+    "720p":   "bestvideo[height<=720]+bestaudio/bestvideo[height<=720]/best[height<=720]/best",
+    "480p":   "bestvideo[height<=480]+bestaudio/bestvideo[height<=480]/best[height<=480]/best",
+    "hd":     "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+    "audio":  "bestaudio/best",
+    "mp3":    "bestaudio/best",
+    "default":"bestvideo+bestaudio/best"
   };
 
   const qualityKey = (quality || "default").toLowerCase();
