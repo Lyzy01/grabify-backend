@@ -42,9 +42,14 @@ app.get("/api/download", async (req, res) => {
     const qualities = [];
     const seen = new Set();
 
-    // Combined video+audio formats (guaranteed to have both streams)
+    // ONLY pick formats that already have BOTH video AND audio in one stream
+    // (no ffmpeg merge needed — safe for Render free tier)
     const combined = formats
-      .filter(f => f.vcodec && f.vcodec !== "none" && f.acodec && f.acodec !== "none" && f.url)
+      .filter(f =>
+        f.vcodec && f.vcodec !== "none" &&
+        f.acodec && f.acodec !== "none" &&
+        f.url
+      )
       .sort((a, b) => (b.height || 0) - (a.height || 0));
 
     for (const f of combined) {
@@ -55,7 +60,7 @@ app.get("/api/download", async (req, res) => {
         qualities.push({
           quality:    label,
           resolution: `${h}p`,
-          ext:        "mp4",
+          ext:        f.ext || "mp4",
           filesize:   f.filesize ? fmt(f.filesize) : null,
           hasAudio:   true
         });
@@ -63,23 +68,18 @@ app.get("/api/download", async (req, res) => {
       if (qualities.length >= 4) break;
     }
 
-    // Fallback: best available format with audio
+    // Fallback: best single format that has video (even if no separate audio tag)
     if (qualities.length === 0) {
       const best = formats
-        .filter(f => f.url)
-        .sort((a, b) => {
-          const aA = a.acodec && a.acodec !== "none" ? 1 : 0;
-          const bA = b.acodec && b.acodec !== "none" ? 1 : 0;
-          if (bA !== aA) return bA - aA;
-          return (b.height || 0) - (a.height || 0);
-        });
+        .filter(f => f.url && f.vcodec && f.vcodec !== "none")
+        .sort((a, b) => (b.height || 0) - (a.height || 0));
       if (best[0]) {
         qualities.push({
           quality:    best[0].height ? `${best[0].height}p` : "HD",
           resolution: best[0].height ? `${best[0].height}p` : "HD",
-          ext:        "mp4",
+          ext:        best[0].ext || "mp4",
           filesize:   null,
-          hasAudio:   true
+          hasAudio:   !!(best[0].acodec && best[0].acodec !== "none")
         });
       }
     }
@@ -124,19 +124,18 @@ app.get("/api/stream", async (req, res) => {
   if (!SUPPORTED.some(d => url.includes(d)))
     return res.status(400).json({ error: "Platform not supported" });
 
-  // Map quality label → yt-dlp format string
-  // NOTE: No [ext=mp4] restrictions — Facebook/Instagram don't always have mp4 formats
-  // yt-dlp will merge to mp4 via --merge-output-format anyway
+  // !! NO ffmpeg on Render free tier — NEVER use + merge format !!
+  // Only use pre-combined formats (vcodec!=none AND acodec!=none in same stream)
   const formatMap = {
-    "4k":     "bestvideo[height<=2160]+bestaudio/bestvideo[height<=2160]/best[height<=2160]/best",
-    "2k":     "bestvideo[height<=1440]+bestaudio/bestvideo[height<=1440]/best[height<=1440]/best",
-    "1080p":  "bestvideo[height<=1080]+bestaudio/bestvideo[height<=1080]/best[height<=1080]/best",
-    "720p":   "bestvideo[height<=720]+bestaudio/bestvideo[height<=720]/best[height<=720]/best",
-    "480p":   "bestvideo[height<=480]+bestaudio/bestvideo[height<=480]/best[height<=480]/best",
-    "hd":     "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+    "4k":     "best[height<=2160][vcodec!=none][acodec!=none]/best[vcodec!=none][acodec!=none]/best",
+    "2k":     "best[height<=1440][vcodec!=none][acodec!=none]/best[vcodec!=none][acodec!=none]/best",
+    "1080p":  "best[height<=1080][vcodec!=none][acodec!=none]/best[vcodec!=none][acodec!=none]/best",
+    "720p":   "best[height<=720][vcodec!=none][acodec!=none]/best[vcodec!=none][acodec!=none]/best",
+    "480p":   "best[height<=480][vcodec!=none][acodec!=none]/best[vcodec!=none][acodec!=none]/best",
+    "hd":     "best[height<=720][vcodec!=none][acodec!=none]/best[vcodec!=none][acodec!=none]/best",
     "audio":  "bestaudio/best",
     "mp3":    "bestaudio/best",
-    "default":"bestvideo+bestaudio/best"
+    "default":"best[vcodec!=none][acodec!=none]/best"
   };
 
   const qualityKey = (quality || "default").toLowerCase();
@@ -154,8 +153,7 @@ app.get("/api/stream", async (req, res) => {
     const args = [
       url,
       "-f", ytFormat,
-      "--merge-output-format", isAudio ? "mp3" : "mp4",
-      "-o", "-",           // output to stdout
+      "-o", "-",           // output to stdout — no ffmpeg merge needed
       "--no-playlist",
       "--quiet",
       "--no-warnings",
